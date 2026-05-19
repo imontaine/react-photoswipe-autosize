@@ -5,10 +5,12 @@
  * that automatically detect image dimensions at runtime.
  *
  * HOW IT WORKS:
- * 1. Each <AutoSizeItem> renders with a 1×1 transparent placeholder
+ * 1. Each <AutoSizeItem> renders with a 1×1 placeholder (sentinel value)
  * 2. An `itemData` filter injects cached dimensions before slides are created
  * 3. For uncached images, `contentLoad` fires a background preload
  * 4. Once resolved, `refreshSlideContent` recreates the slide at full size
+ *
+ * Requires: photoswipe-spinner.css (or react-photoswipe-autosize/styles.css)
  */
 
 import { useCallback } from 'react'
@@ -24,12 +26,11 @@ const SPINNER_SVG = `<svg class="pswp-spinner" viewBox="0 0 50 50">
 
 // ─── Dimension preloader ────────────────────────────────────────────
 
-/** Shared dimension cache — survives re-renders, persists across gallery opens */
+/** Module-level so it survives re-renders and persists across gallery opens */
 const dimensionCache = new Map<string, { w: number; h: number }>()
 
 function preloadImage(src: string): Promise<{ w: number; h: number }> {
   return new Promise((resolve) => {
-    // Check cache first
     const cached = dimensionCache.get(src)
     if (cached) {
       resolve(cached)
@@ -57,15 +58,13 @@ function preloadImage(src: string): Promise<{ w: number; h: number }> {
 const inFlightPreloads = new Map<string, Promise<{ w: number; h: number }>>()
 
 function startPreload(src: string): Promise<{ w: number; h: number }> {
-  // Already cached
   const cached = dimensionCache.get(src)
   if (cached) return Promise.resolve(cached)
 
-  // Already in-flight — return the same promise
+  // Return existing promise to avoid duplicate network requests
   const existing = inFlightPreloads.get(src)
   if (existing) return existing
 
-  // Start new preload
   const promise = preloadImage(src).then((dims) => {
     inFlightPreloads.delete(src)
     return dims
@@ -77,12 +76,6 @@ function startPreload(src: string): Promise<{ w: number; h: number }> {
 /**
  * Returns a handler to pre-cache image dimensions on mouse enter.
  * By the time the user clicks, dimensions are often already known.
- *
- * @example
- * ```tsx
- * const preload = usePreloadOnHover()
- * <img onMouseEnter={() => preload(src)} />
- * ```
  */
 export function usePreloadOnHover() {
   return useCallback((src: string) => {
@@ -105,12 +98,16 @@ export function AutoSizeGallery({
 }: AutoSizeGalleryProps) {
   const handleBeforeOpen: GalleryProps['onBeforeOpen'] = (pswp) => {
     // ── Filter: inject cached dimensions BEFORE slide construction ──
+    // This runs every time PhotoSwipe reads item data, so if we already
+    // know the dimensions from a hover preload, the slide is created
+    // at the correct size from the start — no flash, no spinner.
     pswp.addFilter('itemData', (itemData: any) => {
       const src: string | undefined = itemData?.src
       if (!src) return itemData
 
       const cached = dimensionCache.get(src)
       if (cached) {
+        // PhotoSwipe reads both .width/.height and .w/.h internally
         itemData.width = cached.w
         itemData.height = cached.h
         itemData.w = cached.w
@@ -120,6 +117,9 @@ export function AutoSizeGallery({
     })
 
     // ── Disable blurry thumbnail placeholder ──
+    // PhotoSwipe normally scales the thumbnail (msrc) up as a blurry preview
+    // while the full image loads. We disable this so the user sees our spinner
+    // instead of a blur→sharp flash.
     pswp.addFilter('useContentPlaceholder', () => false)
 
     // ── Hook: for uncached images, start preload ──
@@ -128,10 +128,16 @@ export function AutoSizeGallery({
       const src: string | undefined = content?.data?.src
       if (!src) return
 
+      // itemData filter already injected dimensions for this slide
       if (dimensionCache.has(src)) return
 
+      // Start or join an in-flight preload (deduplicates hover + click)
       startPreload(src).then(() => {
+        // Dimensions are now in the cache, so when refreshSlideContent
+        // recreates the slide, the itemData filter will inject them.
         try {
+          // Look up slide index by URL — content.slide.index may be stale
+          // after rapid navigation because PhotoSwipe recycles slide elements.
           const idx = (pswp as any).getNumItems?.()
             ? Array.from({ length: (pswp as any).getNumItems() }, (_, i) => i)
                 .find((i: number) => {
@@ -144,7 +150,7 @@ export function AutoSizeGallery({
             pswp.refreshSlideContent(idx)
           }
         } catch {
-          // PhotoSwipe may have closed — safe to ignore
+          // PhotoSwipe may have closed before preload finished — safe to ignore
         }
       })
     })
@@ -157,10 +163,13 @@ export function AutoSizeGallery({
 
       const imgEl: HTMLImageElement | undefined = content.element
 
+      // > 1 excludes our 1×1 placeholder sentinel
       if (imgEl?.complete && imgEl.naturalWidth > 1) return
 
+      // Could be 1×1 placeholder or mid-download — hide until ready
       if (imgEl) {
         imgEl.style.visibility = 'hidden'
+
 
         const reveal = () => {
           imgEl.style.visibility = ''
@@ -171,11 +180,13 @@ export function AutoSizeGallery({
         imgEl.addEventListener('error', reveal, { once: true })
       }
 
+
       const container: HTMLElement | undefined = content.slide?.container
       if (container && !container.querySelector('.pswp-spinner')) {
         container.insertAdjacentHTML('beforeend', SPINNER_SVG)
       }
     })
+
 
     userOnBeforeOpen?.(pswp)
   }
@@ -188,6 +199,7 @@ export function AutoSizeGallery({
         showAnimationDuration: 0,
         hideAnimationDuration: 0,
         bgOpacity: 1,
+        // User can override any of the above
         ...options,
       }}
       onBeforeOpen={handleBeforeOpen}
@@ -212,6 +224,7 @@ export function AutoSizeItem({
   children,
   ...rest
 }: AutoSizeItemProps) {
+
   const w = width ?? '1'
   const h = height ?? '1'
 
