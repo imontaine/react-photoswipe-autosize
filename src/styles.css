@@ -1,0 +1,50 @@
+/*
+ * react-photoswipe-autosize — Spinner + Theme
+ * ────────────────────────────────────────────
+ * Loading spinner shown while image dimensions are detected.
+ * Includes an optional light theme (white bg, black UI).
+ *
+ * Import this file in your app:
+ *   import 'react-photoswipe-autosize/styles.css'
+ */
+
+/* ─── Spinner ─── */
+
+.pswp-spinner {
+  animation: pswp-rotate 2s linear infinite;
+  z-index: 2;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin: -25px 0 0 -25px;
+  width: 50px;
+  height: 50px;
+  pointer-events: none;
+}
+
+.pswp-spinner .pswp-spinner__path {
+  stroke: var(--pswp-spinner-color, var(--pswp-icon-color, #fff));
+  stroke-linecap: round;
+  animation: pswp-dash 1.5s ease-in-out infinite;
+}
+
+@keyframes pswp-rotate {
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pswp-dash {
+  0% {
+    stroke-dasharray: 1, 150;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 90, 150;
+    stroke-dashoffset: -35;
+  }
+  100% {
+    stroke-dasharray: 90, 150;
+    stroke-dashoffset: -124;
+  }
+}
