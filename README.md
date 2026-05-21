@@ -28,16 +28,18 @@ import 'photoswipe/dist/photoswipe.css'
 
 function MyGallery() {
   const preload = usePreloadOnHover()
+  const fullSizeUrl = 'https://example.com/big.jpg'
+  const thumbUrl = 'https://example.com/thumb.jpg'
 
   return (
     <AutoSizeGallery>
-      <AutoSizeItem original="https://example.com/big.jpg" thumbnail="https://example.com/thumb.jpg">
+      <AutoSizeItem original={fullSizeUrl} thumbnail={thumbUrl}>
         {({ ref, open }) => (
           <img
             ref={ref}
             onClick={open}
-            onMouseEnter={() => preload('https://example.com/big.jpg')}
-            src="https://example.com/thumb.jpg"
+            onMouseEnter={() => preload(fullSizeUrl)}
+            src={thumbUrl}
             alt="My photo"
           />
         )}
