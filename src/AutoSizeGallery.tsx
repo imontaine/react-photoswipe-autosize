@@ -155,7 +155,19 @@ export function AutoSizeGallery({
       })
     })
 
+    // ── Clean up spinners when slides are recycled ──
+    // holderElement is reused across slides, so remove any orphaned spinner
+    // before new content is loaded into the same holder.
+    pswp.on('contentRemove', (e: any) => {
+      const holder = e.content?.slide?.holderElement
+      const spinner = holder?.querySelector('.pswp-spinner')
+      if (spinner) spinner.remove()
+    })
+
     // ── Hook: hide image + show spinner while it's loading ──
+    // Spinner is injected into holderElement (pswp__slide) rather than
+    // container (pswp__zoom-wrap) so it stays viewport-centered during
+    // pinch-zoom instead of scaling/panning with the image.
     pswp.on('contentAppend', (e: any) => {
       const { content } = e
       const src: string | undefined = content?.data?.src
@@ -166,27 +178,28 @@ export function AutoSizeGallery({
       // > 1 excludes our 1×1 placeholder sentinel
       if (imgEl?.complete && imgEl.naturalWidth > 1) return
 
+      const holder: HTMLElement | undefined = content.slide?.holderElement
+      if (!holder) return
+
+      // Clean any orphaned spinner from a previous slide in this holder
+      const stale = holder.querySelector('.pswp-spinner')
+      if (stale) stale.remove()
+
       // Could be 1×1 placeholder or mid-download — hide until ready
       if (imgEl) {
         imgEl.style.visibility = 'hidden'
 
-
         const reveal = () => {
           imgEl.style.visibility = ''
-          const spinner = content.slide?.container?.querySelector('.pswp-spinner')
+          const spinner = holder.querySelector('.pswp-spinner')
           if (spinner) spinner.remove()
         }
         imgEl.addEventListener('load', reveal, { once: true })
         imgEl.addEventListener('error', reveal, { once: true })
       }
 
-
-      const container: HTMLElement | undefined = content.slide?.container
-      if (container && !container.querySelector('.pswp-spinner')) {
-        container.insertAdjacentHTML('beforeend', SPINNER_SVG)
-      }
+      holder.insertAdjacentHTML('beforeend', SPINNER_SVG)
     })
-
 
     userOnBeforeOpen?.(pswp)
   }
