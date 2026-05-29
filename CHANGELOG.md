@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.3
+
+### Fixed
+
+- Update loading AutoSizeGallery content image for AutoSizeItem
+- Example: `content={ <div><img className="pswp__img" src={src} alt={alt} /></div>}`
+
 ## 1.0.2
 
 ### Fixed
