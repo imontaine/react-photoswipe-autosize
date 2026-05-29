@@ -170,36 +170,70 @@ export function AutoSizeGallery({
     // pinch-zoom instead of scaling/panning with the image.
     pswp.on('contentAppend', (e: any) => {
       const { content } = e
-      const src: string | undefined = content?.data?.src
-      if (!src) return
 
-      const imgEl: HTMLImageElement | undefined = content.element
-
-      // > 1 excludes our 1×1 placeholder sentinel
-      if (imgEl?.complete && imgEl.naturalWidth > 1) return
-
-      const holder: HTMLElement | undefined = content.slide?.holderElement
-      if (!holder) return
+      const holder: HTMLElement | undefined = content.slide?.holderElement;
+      if (!holder) return;
 
       // Clean any orphaned spinner from a previous slide in this holder
-      const stale = holder.querySelector('.pswp-spinner')
-      if (stale) stale.remove()
+      const stale = holder.querySelector('.pswp-spinner');
+      if (stale) stale.remove();
 
-      // Could be 1×1 placeholder or mid-download — hide until ready
+      // ── Resolve the target <img> ──
+      // When the `content` prop is used, PhotoSwipe renders arbitrary HTML and
+      // content.element is the wrapper div — not an <img>. In that case we
+      // search for the first <img> inside the holder instead.
+      const isCustomContent = content?.data?.content != null;
+      const imgEl: HTMLImageElement | null = isCustomContent ?
+        holder.querySelector('img') :
+        content.element instanceof HTMLImageElement ?
+        content.element :
+        null;
+
+      // Already loaded at full size — nothing to do
+      if (imgEl?.complete && imgEl.naturalWidth > 1) return;
+
+      const reveal = () => {
+        if (imgEl) imgEl.style.visibility = '';
+        holder.querySelector('.pswp-spinner')?.remove();
+      };
+
       if (imgEl) {
-        imgEl.style.visibility = 'hidden'
-
-        const reveal = () => {
-          imgEl.style.visibility = ''
-          const spinner = holder.querySelector('.pswp-spinner')
-          if (spinner) spinner.remove()
-        }
-        imgEl.addEventListener('load', reveal, { once: true })
-        imgEl.addEventListener('error', reveal, { once: true })
+        // Standard path: <img> is already in the DOM
+        imgEl.style.visibility = 'hidden';
+        imgEl.addEventListener('load', reveal, {
+          once: true
+        });
+        imgEl.addEventListener('error', reveal, {
+          once: true
+        });
+      } else if (isCustomContent) {
+        // Custom content path: the <img> may not be in the DOM yet (React
+        // renders it asynchronously into the holder). Use a MutationObserver
+        // to watch for it and attach the reveal listeners once it appears.
+        const observer = new MutationObserver(() => {
+          const img = holder.querySelector < HTMLImageElement > ('img');
+          if (!img) return;
+          observer.disconnect();
+          if (img.complete && img.naturalWidth > 1) {
+            reveal();
+            return;
+          }
+          img.style.visibility = 'hidden';
+          img.addEventListener('load', reveal, {
+            once: true
+          });
+          img.addEventListener('error', reveal, {
+            once: true
+          });
+        });
+        observer.observe(holder, {
+          childList: true,
+          subtree: true
+        });
       }
 
-      holder.insertAdjacentHTML('beforeend', SPINNER_SVG)
-    })
+      holder.insertAdjacentHTML('beforeend', SPINNER_SVG);
+    });
 
     userOnBeforeOpen?.(pswp)
   }
