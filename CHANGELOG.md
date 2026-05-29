@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.4
+
+### Fixed
+
+- Fix issue image not load when click multiple thumbs
+
+# Changelog
+
 ## 1.0.3
 
 ### Fixed

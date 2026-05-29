@@ -83,10 +83,95 @@ export function usePreloadOnHover() {
   }, [])
 }
 
+// ─── Helpers ────────────────────────────────────────────────────────
+
+function resolveSrc(content: any): string | undefined {
+  return content?.data?.src || content?.data?.original
+}
+
+function findImg(el: HTMLElement | undefined): HTMLImageElement | undefined {
+  if (!el) return undefined
+  if (el.tagName === 'IMG') return el as HTMLImageElement
+  return el.querySelector('img') ?? undefined
+}
+
+// ─── Attach spinner + reveal logic to a holder ──────────────────────
+// Called both from contentAppend (initial mount) and after
+// refreshSlideContent recreates the slide element.
+//
+// Strategy:
+//   1. Insert spinner into holder immediately.
+//   2. Find the <img> — either already in content.element (standard slides)
+//      or not yet mounted (custom content). Use MutationObserver for the
+//      latter so we catch the img as soon as React appends it.
+//   3. Once we have the img: hide it, attach load/error → reveal.
+//   4. If img is already complete (cached), reveal immediately.
+//
+// Returns the MutationObserver (if one was created) so callers can store
+// it for cleanup when the holder is recycled.
+
+function attachSpinner(
+  content: any,
+  holder: HTMLElement,
+  holderObservers: WeakMap<HTMLElement, MutationObserver>,
+): void {
+  // Clean up any previous observer on this holder before attaching a new one
+  holderObservers.get(holder)?.disconnect()
+  holderObservers.delete(holder)
+
+  holder.querySelector('.pswp-spinner')?.remove()
+  holder.insertAdjacentHTML('beforeend', SPINNER_SVG)
+
+  const reveal = (imgEl: HTMLImageElement) => {
+    imgEl.style.visibility = ''
+    holder.querySelector('.pswp-spinner')?.remove()
+  }
+
+  const attachToImg = (imgEl: HTMLImageElement) => {
+    // Already fully loaded — reveal right away
+    if (imgEl.complete && imgEl.naturalWidth > 1) {
+      reveal(imgEl)
+      return
+    }
+    imgEl.style.visibility = 'hidden'
+    imgEl.addEventListener('load',  () => reveal(imgEl), { once: true })
+    imgEl.addEventListener('error', () => reveal(imgEl), { once: true })
+  }
+
+  // content.element may be the <img> itself (standard) or a <div> wrapper
+  // (custom content). In either case try to find an img synchronously first.
+  const imgNow = findImg(content.element)
+  if (imgNow) {
+    attachToImg(imgNow)
+    return
+  }
+
+  // Custom content: React hasn't mounted the element into the holder yet.
+  // Watch the holder subtree for the first <img> to appear.
+  const observer = new MutationObserver(() => {
+    const imgEl = holder.querySelector<HTMLImageElement>('img')
+    if (!imgEl) return
+    observer.disconnect()
+    holderObservers.delete(holder)
+    attachToImg(imgEl)
+  })
+
+  observer.observe(holder, { childList: true, subtree: true })
+  holderObservers.set(holder, observer)
+
+  // Safety valve: bail out after 1 s so we never leak an observer
+  setTimeout(() => {
+    if (holderObservers.get(holder) === observer) {
+      observer.disconnect()
+      holderObservers.delete(holder)
+      holder.querySelector('.pswp-spinner')?.remove()
+    }
+  }, 1000)
+}
+
 // ─── AutoSizeGallery ────────────────────────────────────────────────
 
 export type AutoSizeGalleryProps = Omit<GalleryProps, 'onBeforeOpen'> & {
-  /** Your own onBeforeOpen handler (will be called after the auto-size hook) */
   onBeforeOpen?: GalleryProps['onBeforeOpen']
 }
 
@@ -97,143 +182,89 @@ export function AutoSizeGallery({
   ...rest
 }: AutoSizeGalleryProps) {
   const handleBeforeOpen: GalleryProps['onBeforeOpen'] = (pswp) => {
-    // ── Filter: inject cached dimensions BEFORE slide construction ──
-    // This runs every time PhotoSwipe reads item data, so if we already
-    // know the dimensions from a hover preload, the slide is created
-    // at the correct size from the start — no flash, no spinner.
+
+    // Keyed by holderElement — survives slide recycling across the gallery session
+    const holderObservers = new WeakMap<HTMLElement, MutationObserver>()
+
+    // ── Inject cached dimensions before slide construction ──────────
     pswp.addFilter('itemData', (itemData: any) => {
-      const src: string | undefined = itemData?.src
+      const src: string | undefined = itemData?.src ?? itemData?.original
       if (!src) return itemData
 
       const cached = dimensionCache.get(src)
       if (cached) {
-        // PhotoSwipe reads both .width/.height and .w/.h internally
-        itemData.width = cached.w
+        itemData.width  = cached.w
         itemData.height = cached.h
-        itemData.w = cached.w
-        itemData.h = cached.h
+        itemData.w      = cached.w
+        itemData.h      = cached.h
       }
       return itemData
     })
 
-    // ── Disable blurry thumbnail placeholder ──
-    // PhotoSwipe normally scales the thumbnail (msrc) up as a blurry preview
-    // while the full image loads. We disable this so the user sees our spinner
-    // instead of a blur→sharp flash.
+    // ── Disable blurry thumbnail placeholder ────────────────────────
     pswp.addFilter('useContentPlaceholder', () => false)
 
-    // ── Hook: for uncached images, start preload ──
+    // ── Start dimension preload for uncached slides ─────────────────
     pswp.on('contentLoad', (e: any) => {
       const { content } = e
-      const src: string | undefined = content?.data?.src
-      if (!src) return
+      const src = resolveSrc(content)
+      if (!src || dimensionCache.has(src)) return
 
-      // itemData filter already injected dimensions for this slide
-      if (dimensionCache.has(src)) return
-
-      // Start or join an in-flight preload (deduplicates hover + click)
       startPreload(src).then(() => {
-        // Dimensions are now in the cache, so when refreshSlideContent
-        // recreates the slide, the itemData filter will inject them.
         try {
-          // Look up slide index by URL — content.slide.index may be stale
-          // after rapid navigation because PhotoSwipe recycles slide elements.
-          const idx = (pswp as any).getNumItems?.()
-            ? Array.from({ length: (pswp as any).getNumItems() }, (_, i) => i)
-                .find((i: number) => {
-                  const data = (pswp as any).getItemData?.(i)
-                  return data?.src === src
-                })
+          const numItems = (pswp as any).getNumItems?.() ?? 0
+          const idx = numItems
+            ? Array.from({ length: numItems }, (_, i) => i).find((i: number) => {
+                const data = (pswp as any).getItemData?.(i)
+                return (data?.src ?? data?.original) === src
+              })
             : content.slide?.index
 
           if (idx !== undefined && idx !== -1 && pswp.currSlide) {
+            // refreshSlideContent destroys and recreates content.element.
+            // contentAppend fires again for the new element, which re-runs
+            // attachSpinner — that's where the new load listener is wired up.
             pswp.refreshSlideContent(idx)
           }
         } catch {
-          // PhotoSwipe may have closed before preload finished — safe to ignore
+          // Gallery closed before preload finished — safe to ignore
         }
       })
     })
 
-    // ── Clean up spinners when slides are recycled ──
-    // holderElement is reused across slides, so remove any orphaned spinner
-    // before new content is loaded into the same holder.
-    pswp.on('contentRemove', (e: any) => {
-      const holder = e.content?.slide?.holderElement
-      const spinner = holder?.querySelector('.pswp-spinner')
-      if (spinner) spinner.remove()
-    })
-
-    // ── Hook: hide image + show spinner while it's loading ──
-    // Spinner is injected into holderElement (pswp__slide) rather than
-    // container (pswp__zoom-wrap) so it stays viewport-centered during
-    // pinch-zoom instead of scaling/panning with the image.
+    // ── Wire up spinner on initial slide mount ──────────────────────
     pswp.on('contentAppend', (e: any) => {
       const { content } = e
+      const src = resolveSrc(content)
+      if (!src) return
 
-      const holder: HTMLElement | undefined = content.slide?.holderElement;
-      if (!holder) return;
+      const holder: HTMLElement | undefined = content.slide?.holderElement
+      if (!holder) return
 
-      // Clean any orphaned spinner from a previous slide in this holder
-      const stale = holder.querySelector('.pswp-spinner');
-      if (stale) stale.remove();
+      attachSpinner(content, holder, holderObservers)
+    })
 
-      // ── Resolve the target <img> ──
-      // When the `content` prop is used, PhotoSwipe renders arbitrary HTML and
-      // content.element is the wrapper div — not an <img>. In that case we
-      // search for the first <img> inside the holder instead.
-      const isCustomContent = content?.data?.content != null;
-      const imgEl: HTMLImageElement | null = isCustomContent ?
-        holder.querySelector('img') :
-        content.element instanceof HTMLImageElement ?
-        content.element :
-        null;
+    // ── Re-wire spinner after refreshSlideContent recreates element ─
+    // PhotoSwipe fires `contentActivate` on the slide that just became
+    // current, but more reliably we can use `slideActivate` which fires
+    // whenever the active slide changes — including after a refresh.
+    // The safest hook here is `contentAppendImage` (fires after PhotoSwipe
+    // appends a refreshed element) but it's not always available; instead
+    // we listen to `change` (slide change) AND re-check inside contentLoad's
+    // `.then()` above via the same attachSpinner path through contentAppend.
+    //
+    // Actually the cleanest approach: PhotoSwipe fires contentAppend again
+    // for the NEW element created by refreshSlideContent, so the listener
+    // above already handles re-attachment automatically. No extra hook needed.
 
-      // Already loaded at full size — nothing to do
-      if (imgEl?.complete && imgEl.naturalWidth > 1) return;
-
-      const reveal = () => {
-        if (imgEl) imgEl.style.visibility = '';
-        holder.querySelector('.pswp-spinner')?.remove();
-      };
-
-      if (imgEl) {
-        // Standard path: <img> is already in the DOM
-        imgEl.style.visibility = 'hidden';
-        imgEl.addEventListener('load', reveal, {
-          once: true
-        });
-        imgEl.addEventListener('error', reveal, {
-          once: true
-        });
-      } else if (isCustomContent) {
-        // Custom content path: the <img> may not be in the DOM yet (React
-        // renders it asynchronously into the holder). Use a MutationObserver
-        // to watch for it and attach the reveal listeners once it appears.
-        const observer = new MutationObserver(() => {
-          const img = holder.querySelector < HTMLImageElement > ('img');
-          if (!img) return;
-          observer.disconnect();
-          if (img.complete && img.naturalWidth > 1) {
-            reveal();
-            return;
-          }
-          img.style.visibility = 'hidden';
-          img.addEventListener('load', reveal, {
-            once: true
-          });
-          img.addEventListener('error', reveal, {
-            once: true
-          });
-        });
-        observer.observe(holder, {
-          childList: true,
-          subtree: true
-        });
-      }
-
-      holder.insertAdjacentHTML('beforeend', SPINNER_SVG);
-    });
+    // ── Clean up when holder is recycled ────────────────────────────
+    pswp.on('contentRemove', (e: any) => {
+      const holder = e.content?.slide?.holderElement
+      if (!holder) return
+      holder.querySelector('.pswp-spinner')?.remove()
+      holderObservers.get(holder)?.disconnect()
+      holderObservers.delete(holder)
+    })
 
     userOnBeforeOpen?.(pswp)
   }
