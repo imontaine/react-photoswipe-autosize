@@ -1,12 +1,18 @@
 # Changelog
 
+## 1.0.5
+
+### Fixed
+
+- Fix async race condition in `contentLoad` handler that caused Safari to throw during `img.decode()` when the gallery was closed or a different slide was navigated to before the image preload finished
+- Capture `content.slide` before the async gap and verify `pswp.currSlide === slide` after preload resolves
+- Validate `itemData` src still matches to prevent refreshing the wrong slide with duplicate image URLs
+
 ## 1.0.4
 
 ### Fixed
 
 - Fix issue image not load when click multiple thumbs
-
-# Changelog
 
 ## 1.0.3
 
