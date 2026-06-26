@@ -205,31 +205,39 @@ export function AutoSizeGallery({
     pswp.addFilter('useContentPlaceholder', () => false)
 
     // ── Start dimension preload for uncached slides ─────────────────
-    pswp.on('contentLoad', (e: any) => {
-      const { content } = e
+    pswp.on('contentLoad', ({ content }: any) => {
       const src = resolveSrc(content)
       if (!src || dimensionCache.has(src)) return
 
-      startPreload(src).then(() => {
-        try {
-          const numItems = (pswp as any).getNumItems?.() ?? 0
-          const idx = numItems
-            ? Array.from({ length: numItems }, (_, i) => i).find((i: number) => {
-                const data = (pswp as any).getItemData?.(i)
-                return (data?.src ?? data?.original) === src
-              })
-            : content.slide?.index
+      // Capture the slide reference *before* the async gap so we can
+      // verify it is still current after the preload resolves.
+      const slide = content.slide
 
-          if (idx !== undefined && idx !== -1 && pswp.currSlide) {
+      startPreload(src)
+        .then(() => {
+          // Guard: the gallery may have closed, moved to another slide,
+          // or the slide may have been recycled while we were loading.
+          if (!slide || pswp.currSlide !== slide) return
+
+          const slideIndex = slide.index
+          const itemData = (pswp as any).getItemData?.(slideIndex)
+
+          // Verify the data source still matches — avoids refreshing
+          // the wrong slide when duplicate image URLs are present.
+          if ((itemData?.src ?? itemData?.original) !== src) return
+
+          try {
             // refreshSlideContent destroys and recreates content.element.
             // contentAppend fires again for the new element, which re-runs
             // attachSpinner — that's where the new load listener is wired up.
-            pswp.refreshSlideContent(idx)
+            pswp.refreshSlideContent(slideIndex)
+          } catch (error) {
+            console.error('Failed to refresh PhotoSwipe content', error)
           }
-        } catch {
-          // Gallery closed before preload finished — safe to ignore
-        }
-      })
+        })
+        .catch(() => {
+          // Preload failure — safe to ignore
+        })
     })
 
     // ── Wire up spinner on initial slide mount ──────────────────────
