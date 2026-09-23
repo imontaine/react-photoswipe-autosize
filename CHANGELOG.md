@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.6
+
+### Fixed
+
+- update photoswipe of peerDependencies "photoswipe": "^5.0.0" => ">=5.3.3" to fix throw EncodingError with message Loading error.
+
 ## 1.0.5
 
 ### Fixed
