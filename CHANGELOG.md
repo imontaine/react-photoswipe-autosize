@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.6
+
+### Fixed
+
+- Mobile: popup images no longer open at `1px × 1px`. `AutoSizeItem` now resolves the real image dimensions when `width`/`height` are omitted and re-registers the item once detected, instead of keeping the `1×1` sentinel
+
 ## 1.0.5
 
 ### Fixed

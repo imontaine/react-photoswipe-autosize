@@ -1,6 +1,6 @@
 {
   "name": "react-photoswipe-autosize",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Drop-in auto-sizing for react-photoswipe-gallery — no width/height props needed",
   "license": "MIT",
   "type": "module",
