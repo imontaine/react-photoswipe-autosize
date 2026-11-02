@@ -13,7 +13,7 @@
  * Requires: photoswipe-spinner.css (or react-photoswipe-autosize/styles.css)
  */
 
-import { useCallback } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Gallery, Item } from 'react-photoswipe-gallery'
 import type { GalleryProps, ItemProps } from 'react-photoswipe-gallery'
 
@@ -307,15 +307,30 @@ export type AutoSizeItemProps = Omit<ItemProps<HTMLElement>, 'width' | 'height'>
 export function AutoSizeItem({
   width,
   height,
+  original,
   children,
   ...rest
 }: AutoSizeItemProps) {
+  const [detected, setDetected] = useState<{ src: string; w: number; h: number } | null>(null)
 
-  const w = width ?? '1'
-  const h = height ?? '1'
+  // Resolve real dimensions before the lightbox opens. Mobile has no hover
+  // pre-cache, so without this the slide is built from the 1×1 sentinel.
+  useEffect(() => {
+    if (!original || (width != null && height != null)) return
+
+    startPreload(original).then((dims) => setDetected({ src: original, ...dims }))
+  }, [original, width, height])
+
+  // Results tagged with a different src belong to an older `original`.
+  const dimensions =
+    (detected?.src === original ? detected : null) ??
+    (original ? dimensionCache.get(original) : undefined)
+
+  const w = width ?? dimensions?.w ?? '1'
+  const h = height ?? dimensions?.h ?? '1'
 
   return (
-    <Item {...rest} width={w} height={h}>
+    <Item {...rest} original={original} width={w} height={h}>
       {children}
     </Item>
   )
