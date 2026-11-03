@@ -5,15 +5,17 @@
  * that automatically detect image dimensions at runtime.
  *
  * HOW IT WORKS:
- * 1. Each <AutoSizeItem> renders with a 1×1 placeholder (sentinel value)
+ * 1. Each <AutoSizeItem> renders without dimensions
  * 2. An `itemData` filter injects cached dimensions before slides are created
  * 3. For uncached images, `contentLoad` fires a background preload
- * 4. Once resolved, `refreshSlideContent` recreates the slide at full size
+ * 4. Any slide whose content was sized before its dimensions resolved —
+ *    including lazily preloaded neighbours — is refreshed once the real
+ *    dimensions are known, so PhotoSwipe marks it zoomable
  *
  * Requires: photoswipe-spinner.css (or react-photoswipe-autosize/styles.css)
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback } from 'react'
 import { Gallery, Item } from 'react-photoswipe-gallery'
 import type { GalleryProps, ItemProps } from 'react-photoswipe-gallery'
 
@@ -44,8 +46,11 @@ function preloadImage(src: string): Promise<{ w: number; h: number }> {
       resolve(dims)
     }
     img.onerror = () => {
-      // Fallback: use a reasonable default so PhotoSwipe doesn't break
+      // Cache the fallback as well — `contentLoad` compares cached
+      // dimensions against the content size, so leaving it uncached would
+      // retry (and refresh) forever for a broken image.
       const dims = { w: 800, h: 600 }
+      dimensionCache.set(src, dims)
       resolve(dims)
     }
     img.src = src
@@ -85,8 +90,16 @@ export function usePreloadOnHover() {
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
-function resolveSrc(content: any): string | undefined {
-  return content?.data?.src || content?.data?.original
+/** Single source of truth for a slide's image URL. */
+function resolveSrc(data: any): string | undefined {
+  return data?.src ?? data?.original
+}
+
+/** True when the item already declares real, usable dimensions. */
+function hasDimensions(data: any): boolean {
+  const w = Number(data?.w ?? data?.width)
+  const h = Number(data?.h ?? data?.height)
+  return Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0
 }
 
 function findImg(el: HTMLElement | undefined): HTMLImageElement | undefined {
@@ -134,7 +147,7 @@ function attachSpinner(
       return
     }
     imgEl.style.visibility = 'hidden'
-    imgEl.addEventListener('load',  () => reveal(imgEl), { once: true })
+    imgEl.addEventListener('load', () => reveal(imgEl), { once: true })
     imgEl.addEventListener('error', () => reveal(imgEl), { once: true })
   }
 
@@ -182,58 +195,93 @@ export function AutoSizeGallery({
   ...rest
 }: AutoSizeGalleryProps) {
   const handleBeforeOpen: GalleryProps['onBeforeOpen'] = (pswp) => {
-
     // Keyed by holderElement — survives slide recycling across the gallery session
     const holderObservers = new WeakMap<HTMLElement, MutationObserver>()
 
     // ── Inject cached dimensions before slide construction ──────────
     pswp.addFilter('itemData', (itemData: any) => {
-      const src: string | undefined = itemData?.src ?? itemData?.original
+      const src = resolveSrc(itemData)
       if (!src) return itemData
 
+      // Explicit dimensions win — never overwrite them.
+      if (hasDimensions(itemData)) return itemData
+
       const cached = dimensionCache.get(src)
-      if (cached) {
-        itemData.width  = cached.w
-        itemData.height = cached.h
-        itemData.w      = cached.w
-        itemData.h      = cached.h
+      if (!cached) return itemData
+
+      return {
+        ...itemData,
+        width: cached.w,
+        height: cached.h,
+        w: cached.w,
+        h: cached.h,
       }
-      return itemData
     })
 
     // ── Disable blurry thumbnail placeholder ────────────────────────
     pswp.addFilter('useContentPlaceholder', () => false)
 
-    // ── Start dimension preload for uncached slides ─────────────────
-    pswp.on('contentLoad', ({ content }: any) => {
-      const src = resolveSrc(content)
-      if (!src || dimensionCache.has(src)) return
+    // ── Refresh slides created before their dimensions were known ───
+    // A slide (or its lazy preload) can be constructed while the image
+    // dimensions are still unknown, so PhotoSwipe sizes it from stale or
+    // missing dimensions. That leaves it non-zoomable: `pswp--zoom-allowed`
+    // is never added and pinch-zoom stays disabled after swiping to it.
+    const pendingRefreshes = new Set<number>()
 
-      // Capture the slide reference *before* the async gap so we can
-      // verify it is still current after the preload resolves.
-      const slide = content.slide
+    const scheduleRefresh = (index: number) => {
+      if (pendingRefreshes.has(index)) return
+      pendingRefreshes.add(index)
+
+      // Deferred: contentLoad fires while the slide is mid-append and
+      // refreshing there would destroy the content being loaded.
+      setTimeout(() => {
+        pendingRefreshes.delete(index)
+        if (pswp.isDestroying || !pswp.mainScroll) return
+
+        try {
+          pswp.refreshSlideContent(index)
+        } catch (error) {
+          console.error('Failed to refresh PhotoSwipe content', error)
+        }
+      }, 0)
+    }
+
+    const refreshIfOutdated = (
+      content: { width: number; height: number; index: number },
+      dims: { w: number; h: number },
+    ) => {
+      if (content.width === dims.w && content.height === dims.h) return
+      scheduleRefresh(content.index)
+    }
+
+    // ── Resolve dimensions for uncached slides ──────────────────────
+    pswp.on('contentLoad', ({ content }: any) => {
+      const src = resolveSrc(content?.data)
+      if (!src) return
+
+      // Explicit dimensions win — never reload or refresh their slides.
+      if (hasDimensions(content?.data)) return
+
+      const cached = dimensionCache.get(src)
+      if (cached) {
+        // The content may have been cached by a lazy preload that ran
+        // before the dimensions were resolved, so its size can be stale
+        // even though the dimensions are now known.
+        refreshIfOutdated(content, cached)
+        return
+      }
+
+      const index = content.index
 
       startPreload(src)
-        .then(() => {
-          // Guard: the gallery may have closed, moved to another slide,
-          // or the slide may have been recycled while we were loading.
-          if (!slide || pswp.currSlide !== slide) return
-
-          const slideIndex = slide.index
-          const itemData = (pswp as any).getItemData?.(slideIndex)
+        .then((dims) => {
+          const itemData = (pswp as any).getItemData?.(index)
 
           // Verify the data source still matches — avoids refreshing
           // the wrong slide when duplicate image URLs are present.
-          if ((itemData?.src ?? itemData?.original) !== src) return
+          if (!itemData || resolveSrc(itemData) !== src) return
 
-          try {
-            // refreshSlideContent destroys and recreates content.element.
-            // contentAppend fires again for the new element, which re-runs
-            // attachSpinner — that's where the new load listener is wired up.
-            pswp.refreshSlideContent(slideIndex)
-          } catch (error) {
-            console.error('Failed to refresh PhotoSwipe content', error)
-          }
+          refreshIfOutdated(content, dims)
         })
         .catch(() => {
           // Preload failure — safe to ignore
@@ -243,7 +291,7 @@ export function AutoSizeGallery({
     // ── Wire up spinner on initial slide mount ──────────────────────
     pswp.on('contentAppend', (e: any) => {
       const { content } = e
-      const src = resolveSrc(content)
+      const src = resolveSrc(content?.data)
       if (!src) return
 
       const holder: HTMLElement | undefined = content.slide?.holderElement
@@ -253,17 +301,9 @@ export function AutoSizeGallery({
     })
 
     // ── Re-wire spinner after refreshSlideContent recreates element ─
-    // PhotoSwipe fires `contentActivate` on the slide that just became
-    // current, but more reliably we can use `slideActivate` which fires
-    // whenever the active slide changes — including after a refresh.
-    // The safest hook here is `contentAppendImage` (fires after PhotoSwipe
-    // appends a refreshed element) but it's not always available; instead
-    // we listen to `change` (slide change) AND re-check inside contentLoad's
-    // `.then()` above via the same attachSpinner path through contentAppend.
-    //
-    // Actually the cleanest approach: PhotoSwipe fires contentAppend again
-    // for the NEW element created by refreshSlideContent, so the listener
-    // above already handles re-attachment automatically. No extra hook needed.
+    // PhotoSwipe fires `contentAppend` again for the NEW element created
+    // by refreshSlideContent, so the listener above already handles
+    // re-attachment automatically. No extra hook needed.
 
     // ── Clean up when holder is recycled ────────────────────────────
     pswp.on('contentRemove', (e: any) => {
@@ -307,30 +347,11 @@ export type AutoSizeItemProps = Omit<ItemProps<HTMLElement>, 'width' | 'height'>
 export function AutoSizeItem({
   width,
   height,
-  original,
   children,
   ...rest
 }: AutoSizeItemProps) {
-  const [detected, setDetected] = useState<{ src: string; w: number; h: number } | null>(null)
-
-  // Resolve real dimensions before the lightbox opens. Mobile has no hover
-  // pre-cache, so without this the slide is built from the 1×1 sentinel.
-  useEffect(() => {
-    if (!original || (width != null && height != null)) return
-
-    startPreload(original).then((dims) => setDetected({ src: original, ...dims }))
-  }, [original, width, height])
-
-  // Results tagged with a different src belong to an older `original`.
-  const dimensions =
-    (detected?.src === original ? detected : null) ??
-    (original ? dimensionCache.get(original) : undefined)
-
-  const w = width ?? dimensions?.w ?? '1'
-  const h = height ?? dimensions?.h ?? '1'
-
   return (
-    <Item {...rest} original={original} width={w} height={h}>
+    <Item {...rest} width={width} height={height}>
       {children}
     </Item>
   )
