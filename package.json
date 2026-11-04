@@ -55,6 +55,6 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/imontaine/react-photoswipe-autosize.git"
+    "url": "git+https://github.com/jomashopio/react-photoswipe-autosize.git"
   }
 }

@@ -115,6 +115,40 @@ The spinner color automatically matches PhotoSwipe's `--pswp-icon-color` variabl
 5. Once dimensions resolve, `refreshSlideContent` recreates the slide at full size
 6. A deduplication layer (`startPreload`) prevents duplicate loads from hover + click
 
+## Publishing releases
+
+GitHub Actions builds and checks the package on pull requests and pushes to
+`main`. Publishing a stable GitHub Release then publishes the matching version
+to npm using trusted publishing. Prereleases are not published to npm.
+
+### One-time npm setup
+
+In the npm package's **Settings → Trusted Publisher**, choose **GitHub Actions**
+and configure:
+
+- Organization or user: `jomashopio`
+- Repository: `react-photoswipe-autosize`
+- Workflow filename: `publish.yml`
+- Environment name: leave blank
+- Allow direct publishing with `npm publish`
+
+The workflow lives at `.github/workflows/publish.yml`. It uses Node.js 24 and npm
+OIDC authentication, so no npm token needs to be stored in GitHub secrets.
+
+### Release a new version
+
+1. Update the version with `npm version patch --no-git-tag-version` (or `minor`
+   or `major`). This updates both `package.json` and `package-lock.json`.
+2. Update `CHANGELOG.md` and merge the changes into `main`.
+3. Create and publish a stable GitHub Release targeting that commit on `main`,
+   using a tag that exactly matches the package version, such as `v1.0.8`.
+4. Check the **Build and publish** workflow in GitHub Actions. It validates the
+   version and source, builds the package, and publishes it to npm with provenance.
+
+The existing `1.0.7` version can be released as `v1.0.7` after the one-time setup.
+If publishing fails, fix the reported problem and rerun the failed workflow job.
+Versions that have already been published to npm cannot be published again.
+
 ## License
 
 MIT
