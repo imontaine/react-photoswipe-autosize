@@ -145,6 +145,10 @@ OIDC authentication, so no npm token needs to be stored in GitHub secrets.
 4. Check the **Build and publish** workflow in GitHub Actions. It validates the
    version and source, builds the package, and publishes it to npm with provenance.
 
+npm reviews new versions before they become installable. After a successful
+workflow, the npm versions tab may show **Validating** for several minutes. Wait
+for **Published** before installing the new version.
+
 The existing `1.0.7` version can be released as `v1.0.7` after the one-time setup.
 If publishing fails, fix the reported problem and rerun the failed workflow job.
 Versions that have already been published to npm cannot be published again.
