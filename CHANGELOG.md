@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.7
+
+### Fixed
+
+- Mobile popup images opening at `1px × 1px`: `AutoSizeItem` no longer falls back to `1` when `width`/`height` are omitted, so slides are sized from the detected dimensions instead
+- Slides whose content was sized before their dimensions resolved — including lazily preloaded neighbours — are now refreshed once the real dimensions are known, so PhotoSwipe marks them zoomable after swiping to them
+- Cached dimensions are compared against the current content size, so slides that are already sized correctly are not refreshed again
+- Explicit `width`/`height` (or already-resolved) dimensions are no longer overwritten by cached values, and the `itemData` filter returns a copy instead of mutating PhotoSwipe's item data
+- Removed the mount-time `useEffect` preload from `AutoSizeItem` — it downloaded every full-size image as soon as gallery items mounted. Detection and resizing stay at the lightbox open boundary (`contentLoad` → `refreshSlideContent`), with results cached for subsequent opens
+- The `800×600` fallback for images that fail to load is now cached as well, preventing endless refresh retries for a broken image
+
 ## 1.0.6
 
 ### Fixed
